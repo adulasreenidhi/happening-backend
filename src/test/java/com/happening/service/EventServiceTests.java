@@ -1,0 +1,169 @@
+package com.happening.service;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.Optional;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.happening.dto.EventRequest;
+import com.happening.dto.EventResponse;
+import com.happening.entity.Category;
+import com.happening.entity.City;
+import com.happening.entity.Event;
+import com.happening.entity.EventStatus;
+import com.happening.entity.User;
+import com.happening.exception.ForbiddenOperationException;
+import com.happening.exception.ResourceNotFoundException;
+import com.happening.repository.CategoryRepository;
+import com.happening.repository.CityRepository;
+import com.happening.repository.EventRepository;
+import com.happening.repository.UserRepository;
+
+@ExtendWith(MockitoExtension.class)
+class EventServiceTests {
+
+    @Mock
+    private EventRepository eventRepository;
+    @Mock
+    private CategoryRepository categoryRepository;
+    @Mock
+    private CityRepository cityRepository;
+    @Mock
+    private UserRepository userRepository;
+
+    private EventService eventService;
+    private Category category;
+    private City city;
+    private User organizer;
+
+    @BeforeEach
+    void setUp() {
+        eventService = new EventService(
+                eventRepository, categoryRepository, cityRepository, userRepository);
+        category = new Category();
+        category.setId(3L);
+        city = new City();
+        city.setId(4L);
+        organizer = new User();
+        organizer.setId(5L);
+        organizer.setEmail("organizer@example.com");
+    }
+
+    @Test
+    void createsEventWithDevelopmentDefaults() {
+        when(categoryRepository.findById(3L)).thenReturn(Optional.of(category));
+        when(cityRepository.findById(4L)).thenReturn(Optional.of(city));
+        when(userRepository.findByEmailIgnoreCase("organizer@example.com"))
+                .thenReturn(Optional.of(organizer));
+        when(eventRepository.save(any(Event.class))).thenAnswer(invocation -> {
+            Event event = invocation.getArgument(0);
+            event.setId(12L);
+            return event;
+        });
+
+        EventResponse created = eventService.createEvent(
+                request(null, EventStatus.APPROVED), "organizer@example.com", false);
+
+        assertEquals(12L, created.id());
+        assertEquals(300, created.availableSeats());
+        assertEquals(EventStatus.PENDING, created.status());
+        assertEquals(3L, created.categoryId());
+        assertEquals(5L, created.organizerId());
+    }
+
+    @Test
+    void ignoresClientControlledAvailabilityWhenCreatingEvent() {
+        when(categoryRepository.findById(3L)).thenReturn(Optional.of(category));
+        when(cityRepository.findById(4L)).thenReturn(Optional.of(city));
+        when(userRepository.findByEmailIgnoreCase("organizer@example.com"))
+                .thenReturn(Optional.of(organizer));
+        when(eventRepository.save(any(Event.class))).thenAnswer(invocation -> {
+            Event event = invocation.getArgument(0);
+            event.setId(13L);
+            return event;
+        });
+
+        EventResponse created = eventService.createEvent(
+                request(301, null), "organizer@example.com", false);
+
+        assertEquals(300, created.availableSeats());
+    }
+
+    @Test
+    void organizerCannotUpdateAnotherOrganizersEvent() {
+        Event event = new Event();
+        event.setOrganizer(organizer);
+        when(eventRepository.findById(12L)).thenReturn(Optional.of(event));
+
+        assertThrows(
+                ForbiddenOperationException.class,
+                () -> eventService.updateEvent(
+                        12L, request(null, null), "someone-else@example.com", false));
+    }
+
+    @Test
+    void adminCanApproveAnEvent() {
+        when(categoryRepository.findById(3L)).thenReturn(Optional.of(category));
+        when(cityRepository.findById(4L)).thenReturn(Optional.of(city));
+        when(userRepository.findById(999L)).thenReturn(Optional.of(organizer));
+        when(eventRepository.save(any(Event.class))).thenAnswer(invocation -> {
+            Event event = invocation.getArgument(0);
+            event.setId(12L);
+            return event;
+        });
+
+        EventResponse created = eventService.createEvent(
+                request(null, EventStatus.APPROVED), "admin@example.com", true);
+
+        assertEquals(EventStatus.APPROVED, created.status());
+    }
+
+    @Test
+    void missingEventIsReportedAsNotFoundForDelete() {
+        when(eventRepository.findById(99L)).thenReturn(Optional.empty());
+
+        assertThrows(
+                ResourceNotFoundException.class,
+                () -> eventService.deleteEvent(99L, "organizer@example.com", false));
+        verify(eventRepository).findById(99L);
+    }
+
+    @Test
+    void publicEventDetailsHideEventsThatHaveNotBeenApproved() {
+        Event event = new Event();
+        event.setId(22L);
+        event.setStatus(EventStatus.PENDING);
+        when(eventRepository.findById(22L)).thenReturn(Optional.of(event));
+
+        assertThrows(ResourceNotFoundException.class, () -> eventService.getEventById(22L));
+    }
+
+    private EventRequest request(Integer availableSeats, EventStatus status) {
+        return new EventRequest(
+                "City Festival",
+                "An outdoor event",
+                3L,
+                4L,
+                999L,
+                "Central Park",
+                LocalDate.of(2026, 11, 15),
+                LocalTime.of(10, 0),
+                new BigDecimal("25.00"),
+                300,
+                availableSeats,
+                null,
+                status);
+    }
+}
